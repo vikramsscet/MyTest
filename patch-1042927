@@ -1,0 +1,625 @@
+... depotFile //Core/Websites/Hydra/trunk/products/hydra-base/base/domain/inventory/adapters/base.domain.inventory.vehicleDetailCriterion.js
+... clientFile /Users/raov/raov_pun-raov-m_4885/raov_pun-raov-m_4885/Core/Websites/Hydra/trunk/products/hydra-base/base/domain/inventory/adapters/base.domain.inventory.vehicleDetailCriterion.js
+... rev 5
+... type ktext
+
+@@ -1,44 +1,44 @@
+ /**
+  * Created by zisheny on 11/12/15.
+  */
+ /*jshint es3: false, newcap: false, strict: true, undef:true, eqeqeq: false, unused:true */
+ /*globals Co, base */
+ (function() {
+ 
+     "use strict";
+     "import Co.context.selections";
+ 
+     var _ = require('lodash');
+ 
+     base.domain.inventory("vehicleDetailCriterion", function (selections) {
+ 
+         var vehicleDetailCriterion = this;
+ 
+         vehicleDetailCriterion.fetch = function(nodeSearch) {
+             var nodeId = nodeSearch.id;
+ 
+             if (nodeId.isNodeSearch()) {
+                 nodeId = nodeId.generateVirtualID('inventory', 'vehicleDetailCriterion');
+             }
+ 
+             return Co.when(selections.fetch())
+                 .then(function(context) {
+-                    var vehicleId = _.get(context, 'request.params.id') || '';
+-
++                    //var vehicleId = _.get(context, 'request.params.id') || '';
++                    var vehicleId = _.get(context, 'request.params.id') || _.get(context.configCtx, 'id') || '';
+                     return {
+                         id: nodeId,
+                         instanceID: vehicleId
+ 
+                     };
+                 });
+         };
+ 
+         vehicleDetailCriterion.search = function(nodeSearch) {
+             // Return the context as an array
+             return this.fetch(nodeSearch).then(function(context){
+                 return [context];
+             });
+         };
+ 
+     }).requires(Co.context.selections);
+ }());
+\ No newline at end of file
+
+... depotFile //Core/Websites/Hydra/trunk/products/hydra-base/base/domain/inventory/adapters/vehicle/base.domain.inventory.physicalVehicle.js
+... clientFile /Users/raov/raov_pun-raov-m_4885/raov_pun-raov-m_4885/Core/Websites/Hydra/trunk/products/hydra-base/base/domain/inventory/adapters/vehicle/base.domain.inventory.physicalVehicle.js
+... rev 56
+... type ktext
+
+@@ -1,360 +1,412 @@
+ /*jshint es3: false, newcap: false, strict: true, undef:true, eqeqeq: false, unused:true */
+ /*globals Co, base */
+ (function () {
+     "use strict";
+-    "import Co.service.websiteproxy,Co.context.cache,base.domain.inventory.abstractVehicle,Co.context.urls,Co.util.cookie,Co.util.url,base.domain.inventory.pixelTagDataGenerator,base.domain.dealer.config,base.graph.nodeURI,base.domain.inventory.vehicleSpecification,Co.context.selections";
++    "import Co.service.websiteproxy,Co.context.cache,base.domain.inventory.abstractVehicle,Co.context.urls,Co.util.cookie,Co.util.url,base.domain.inventory.pixelTagDataGenerator,base.domain.dealer.config,base.graph.nodeURI,base.domain.inventory.vehicleSpecification,Co.context.selections, Co.service.dealer";
+     var _ = require("lodash");
+-
+-    base.domain.inventory("physicalVehicle", function (proxyService, cache, adapter, urlService, cookieUtil, urlUtil, pixelTag, config, NodeURI, spec, selectionService) {
++    var xml2js = require('xml2js');
++    var parser = new xml2js.Parser();
++    var URL = require('url-parse');
++    base.domain.inventory("physicalVehicle", function (proxyService, cache, adapter, urlService, cookieUtil, urlUtil, pixelTag, config, NodeURI, spec, selectionService, dealerService) {
+         var Vehicle = this;
+         var Static = this["static"];
+-        Static.configParams = {};
++        Static.configParams = {
++            fields: "inventory(vehicleSearchResults)"
++        };
+ 
+         Static.configNodeSearch = {
+             id: {
+                 domainName: "dealer",
+                 modelName: "config",
+                 getParams: function () {
+                     return Static.configParams;
+                 },
+                 generateVirtualID: NodeURI.generateVirtualID
+             }
+         };
+ 
+         Vehicle.fetch = function (nodeSearch) {
+ 
+             var self = this;
+             var endPoint = "vehicle";
+             var sel = selectionService && selectionService.fetch() || {};
+             var params = {
+                 vehicleId: nodeSearch.id.instanceID || sel.id || ""
+             };
+ 
+-            return Co.when([proxyService.load(endPoint, params), config.fetch(Static.configNodeSearch)]).then(function (responses) {
++            //Below commented code is not getting dealer property
++            /*return proxyService.load(endPoint, params).then(function (vehicle) {
++                if (!vehicle) {
++                    return null;
++                }
++                self._storeIncentiveCache(vehicle);
++                self._storeLogoInCache(vehicle);
++
++                return self._mergeNode(nodeSearch, adapter.mergeNode(vehicle), vehicle);
++            }).fail(function (err) {
++                console.error("Failed to fetch vehicle for node id - " + nodeSearch.id, err);
++                return null;
++            });*/
++            var returnNodes;
++
++            return Co.when([proxyService.load(endPoint, params), dealerService.searchDealersProperties({"webId":sel.configCtx.webId})]).then(function (responses) {
+                 var vehicle = responses[0];
+-                var configData = responses[1];
++                var dealerProperty = responses[1];
+ 
+                 if (!vehicle) {
+                     return null;
+                 }
+                 self._storeIncentiveCache(vehicle);
+                 self._storeLogoInCache(vehicle);
+-
+-                return self._mergeNode(nodeSearch, adapter.mergeNode(vehicle), vehicle, configData);
++                returnNodes = self._mergeNode(nodeSearch, adapter.mergeNode(vehicle), vehicle, null, dealerProperty);
++                return returnNodes;
+             }).fail(function (err) {
+                 console.error("Failed to fetch vehicle for node id - " + nodeSearch.id, err);
+                 return null;
+             });
+         };
+ 
+         Vehicle.search = function (nodeSearch) {
+             var self = this;
+             var returnNodes = [];
+             var params = {};
+             var URIParams = nodeSearch.id.getParams();
+-            delete URIParams['intentAware'];
+             var endPoint = URIParams.endPoint ? URIParams.endPoint : "search";
+             self._prepareParam(URIParams, params);
+ 
+-            return Co.when([proxyService.load(endPoint, params), config.fetch(Static.configNodeSearch)]).then(function (responses) {
++            return Co.when([proxyService.load(endPoint, params), config.fetch(Static.configNodeSearch), dealerService.searchDealersProperties({"webId":nodeSearch.id.params.selections.configCtx.webId})]).then(function (responses) {
+                 var vehicles = responses[0];
+                 var configData = responses[1];
++                var dealerProperty = responses[2];
+                 if (vehicles) {
+                     var results = [];
+                     if (vehicles.results) results = vehicles.results;
+                     else if (vehicles.vehicles) results = vehicles.vehicles;
+                     results.forEach(function (vehicle) {
+                         self._storeIncentiveCache(vehicle);
+                         self._storeLogoInCache(vehicle);
+-                        var vehicleData = self._mergeNode(nodeSearch, adapter.mergeNode(vehicle), vehicle, configData);
++                        var vehicleData = self._mergeNode(nodeSearch, adapter.mergeNode(vehicle), vehicle, configData, dealerProperty);
+                         if (endPoint === "search" && URIParams.compareParam === "true")
+                             self.populateCompareData(vehicleData, URIParams);
+                         returnNodes.push(vehicleData);
+                     });
+ 
+                 }
++
+                 return returnNodes;
+             }).fail(function (err) {
+                 console.error("Failed to search vehicle for node id - " + nodeSearch.id, err);
+                 return null;
+             });
+         };
+ 
+         Vehicle._prepareParam = function (URIParams, params) {
+             delete URIParams['configCtx'];
+             if (URIParams.endPoint) {
+                 if (URIParams.endPoint == "similarVehicles") {
+                     params.vehicleId = URIParams.vehicleId;
+                 } else if (URIParams.endPoint == "compare") {
+                     params.id = URIParams.savedVehicleIds;
+                 } else if (URIParams.endPoint == "search" && URIParams.savedVehicleIds) {
+                     params.ids = URIParams.savedVehicleIds;
+                 }
+             } else {
+                 params.mvsSearchParameters = urlUtil.formatQuery(getValidParams(URIParams));
+             }
+         };
+ 
+         function getValidParams(URIParams) {
+             var validParams = {};
+             var invalidParamKeys = ["selections", "savedVehicleIdsArr", "saveVehiclesParam"];
+             _.assign(validParams, _.omit(URIParams, invalidParamKeys));
+             return validParams;
+         }
+ 
+         Vehicle._storeIncentiveCache = function (vehicle) {
+             var incentives = vehicle.incentives;
+             if (incentives)
+                 cache.set(vehicle.id + '_incentive', incentives);
+ 
+         };
+ 
+         Vehicle._storeLogoInCache = function (vehicle) {
+             var logos = vehicle.logos;
+             if (logos) {
+                 var i = 0;
+                 logos.forEach(function (logo) {
+                     cache.set(vehicle.id + '_logo_' + i++, logo);
+                 });
+             }
+         };
+ 
+-        Vehicle._mergeNode = function (nodeSearch, result, vehicle, configData) {
++        Vehicle._mergeNode = function (nodeSearch, result, vehicle, configData, dealerProperty) {
+             var id = nodeSearch.id.domainName + "/" + nodeSearch.id.modelName + "/" + vehicle.id;
+             result.id = id;
+             result.vin = vehicle.vin || adapter.ALT_DISPLAY_VALUE;
+             result.category = vehicle.category;
+-            result.location = vehicle.dealerInfo ? vehicle.dealerInfo.locationName : "";
++            result.location = vehicle.location;
+             result.transmission = vehicle.transmission || adapter.ALT_DISPLAY_VALUE;
+             result.vehicleDetailWebUrl = vehicle.vehicleDetailWebUrl;
+             result.stockNumber = vehicle.stockNumber || adapter.ALT_DISPLAY_VALUE;
+             result.priorUse = vehicle.priorUse;
+             result.status = vehicle.status;
+             result.odometer = this._populateOdometer(vehicle);
+             this._populateColors(result, vehicle);
+             result.dealerPhotos = this._populateDealerPhotos(vehicle);
+             result.dealerPhotosCount = vehicle.photos ? (vehicle.photos['dealer'] ? vehicle.photos['dealer'].length : 0) : 0;
+             result.stockPhotosCount = vehicle.photos ? (vehicle.photos['oem'] ? vehicle.photos['oem'].length : 0) : 0;
+             result.totalPhotoCount = result.dealerPhotosCount + result.stockPhotosCount;
+             result.videosCount = vehicle.videos ? vehicle.videos.length : 0;
+ 
+             var incentives = vehicle.incentives;
+             if (incentives) {
+                 result.links['displayableIncentives'] = {};
+                 result.links['displayableIncentives'].href = "inventory/vehicleIncentive/" + vehicle.id + '_incentive';
+                 result.links['displayableIncentives'].name = "incentive_" + vehicle.id;
+             }
+             var logos = vehicle.logos;
+             if (logos) {
+                 var i = 0;
+                 result.links['logos'] = [];
+                 logos.forEach(function (logo) {
+                     result.links['logos'].push({
+                         'href': "inventory/logo/" + vehicle.id + '_logo_' + i,
+                         'name': "logo_" + logo.name
+                     });
+                     i++;
+                 });
+             }
+             result['pixelTagInfo'] = pixelTag.generate(result);
+             populateSaveVehicles(nodeSearch, vehicle, result);
+             /*
+              The code need to be removed after the functionality is stable
+              */
+             result.actions = {};
+             var URIParams = nodeSearch.id.getParams();
+             result.actions.priceWatch = (URIParams.priceWatchParam == "true");
+             result.actions.saveVehiclesParam = (URIParams.saveVehiclesParam == "true");
+ 
+ 
+-            result.specData = spec.getSpecification(configData, vehicle, nodeSearch.id.getParams().specificationsLimit);
++            result.specData = spec.getSpecification(configData, vehicle);
++            if(dealerProperty){
++                if(dealerProperty.results.length > 0){
++                    if(dealerProperty.results[0].properties.dor_enable_feature=="true"){
++                        var vehicleScdUrl = this.getDorInformation(vehicle, dealerProperty.results[0].properties);
+ 
++                        result.vehicleScdUrl = vehicleScdUrl;
++                    }
++                }
++            }
+ 
+             return result;
+         };
+ 
+         Vehicle.populateCompareData = function (vehicleData, URIParams) {
+             var compareData = {},
+                 newCartVehicleIds = "",
+                 className;
+             var cartVehicleIds = this.populateCartVehicleIds(URIParams);
+             var validParams = this.populateCompareCTAParams(URIParams);
+             var vehicleId = vehicleData.id.split("/")[2];
+             if (cartVehicleIds.length > 0) {
+                 if (!(cartVehicleIds.indexOf(vehicleId) > -1)) {
+                     cartVehicleIds.push(vehicleId);
+                     className = "vehicle-compare";
+                 } else {
+                     cartVehicleIds.splice(cartVehicleIds.indexOf(vehicleId), 1);
+                     className = "vehicle-compare-selected";
+                 }
+                 newCartVehicleIds = cartVehicleIds.join(",");
+             } else {
+                 newCartVehicleIds += vehicleId;
+                 className = "vehicle-compare";
+             }
+             compareData.href = "?" + urlUtil.formatQuery(validParams) + "&cartVehicleIds=" + newCartVehicleIds;
+             compareData.classValue = className;
+             //TODO: temporary flag to not break current NADA sites.
+             compareData.compareParam = URIParams.compareParam == "true";
+             vehicleData.compareData = compareData;
+         };
+ 
+         Vehicle.compareCartIdsCriterion = function (URIParams) {
+             var cartParams = ["cartVehicleIds"];
+             var result = {};
+             var context = URIParams.selections;
+             if (context.request && context.request.params) {
+                 _.assign(result, _.pick(context.request.params, cartParams));
+             } else if (context) { //for route: base-view
+                 _.assign(result, _.pick(context, cartParams));
+             }
+             return result.cartVehicleIds;
+         };
+ 
+         Vehicle.populateCartVehicleIds = function (URIParams) {
+             var cartVehicleIds = this.compareCartIdsCriterion(URIParams);
+             var idArr = [];
+             if (cartVehicleIds) {
+                 if (cartVehicleIds.constructor === Number) //when one vehicle is passed
+                     idArr = [cartVehicleIds.toString()];
+                 else if (cartVehicleIds.constructor !== Boolean)
+                     idArr = cartVehicleIds.split(",");
+             }
+             //this handles the situation when user comes back to VSR after adding the vehicle onto cart and navigated away from VSR or closed the window
+             if (!cartVehicleIds || idArr.length === 0 && cartVehicleIds && cartVehicleIds.constructor !== Boolean) {
+                 var cookieCartVehicles = cookieUtil.getCookie("cartVehicleIds");
+                 if (cookieCartVehicles)
+                     idArr = idArr.concat(cookieCartVehicles.split(","));
+             }
+             //remove duplicates from idArr and returns
+             return _.uniq(idArr);
+         };
+ 
+         Vehicle.populateCompareCTAParams = function (URIParams) {
+             var validParams = {};
+             var ignoreParams = ["selections", "cartVehicleIds"];
+             _.assign(validParams, _.omit(URIParams, ignoreParams));
+             var context = URIParams.selections;
+             if (context.request && context.request.params) {} else if (context) { //for route: base-view
+                 validParams.configCtx = context.configCtx;
+             }
+             return validParams;
+         };
+ 
+         function populateSaveVehicles(nodeSearch, vehicle, result) {
+             var URIParams = nodeSearch.id.getParams();
+             if (URIParams && URIParams.selections) {
+                 var isSaved = false;
+                 var selections = URIParams.selections;
+                 var saveVehiclesLinkHref = selections.path + "?";
+                 for (var key in selections) {
+                     if (selections.hasOwnProperty(key)) {
+                         switch (key) {
+                             case "cookies": //do nothing
+                             case "path":
+                             case "referer":
+                             case "route":
+                             case "view":
+                             case "currVehicleId":
+                             case "saveVehicleAction":
+                             case "action":
+                             case "fragmentId":
+                                 break;
+                             case "configCtx":
+                                 saveVehiclesLinkHref += key + "=" + encodeURI(JSON.stringify(selections[key])) + "&";
+                                 break;
+                             default:
+                                 saveVehiclesLinkHref += key + "=" + selections[key] + "&";
+                                 break;
+                         }
+                     }
+                 }
+ 
+                 if (URIParams.savedVehicleIdsArr && URIParams.savedVehicleIdsArr.indexOf(vehicle.id + "") > -1) {
+                     isSaved = true;
+                 }
+                 result.saveVehiclesLinkHref = urlService.appUrl("/") + saveVehiclesLinkHref + "currVehicleId=" + vehicle.id + "&saveVehicleAction=" + (isSaved ? "remove" : "add");
+                 result.ariaSaved = isSaved;
+             }
+         }
+ 
+ 
+         Vehicle._populateOdometer = function (vehicle) {
+             var odometer = vehicle.odometer;
+             if (odometer) {
+                 return Vehicle._populateOdometerByEntries(odometer);
+             }
+             return Vehicle._populateOdometerByEntries({});
+         };
+ 
+         Vehicle._populateColors = function (result, vehicle) {
+             var color = vehicle.color;
+             if (color)
+                 Vehicle._populateColorsBase(color, result);
+             else
+                 Vehicle._populateColorsBase({}, result);
+         };
+         Vehicle._populateColorsBase = function (color, result) {
+ 
+             if (color.interior)
+                 Vehicle._populateInteriorColors(color.interior, result);
+             else
+                 Vehicle._populateInteriorColors({}, result);
+ 
+             if (color.exterior)
+                 Vehicle._populateExteriorColors(color.exterior, result);
+             else
+                 Vehicle._populateExteriorColors({}, result);
+ 
+         };
+         Vehicle._populateInteriorColors = function (interior, result) {
+             result['interiorColor'] = {};
+             result['interiorColor']['name'] = interior.name || adapter.ALT_DISPLAY_VALUE;
+             result['interiorColor']['baseColor'] = interior.baseColor || adapter.ALT_DISPLAY_VALUE;
+             result['interiorColor']['colorCode'] = interior.colorCode || adapter.ALT_DISPLAY_VALUE;
+ 
+         };
+ 
+         Vehicle._populateExteriorColors = function (exterior, result) {
+             result['exteriorColor'] = {};
+             result['exteriorColor']['name'] = exterior.name || adapter.ALT_DISPLAY_VALUE;
+             result['exteriorColor']['baseColor'] = exterior.baseColor || adapter.ALT_DISPLAY_VALUE;
+             result['exteriorColor']['colorCode'] = exterior.colorCode || adapter.ALT_DISPLAY_VALUE;
+         };
+         Vehicle._populateColorsInterior = function (interior, result) {
+             result.interiorColor = color.interior || adapter.ALT_DISPLAY_VALUE;
+         };
+         Vehicle._populateColorsExterior = function (exterior, result) {
+             result.exteriorColor = color.exterior || adapter.ALT_DISPLAY_VALUE;
+         };
+ 
+         Vehicle._populateDealerPhotos = function (vehicle) {
+             var dealerPhotos = [];
+             var photos = vehicle.photos;
+             if (photos) {
+                 var dealerData = photos['dealer'];
+                 if (dealerData) {
+                     dealerData.forEach(function (photo) {
+                         dealerPhotos.push({
+                             'urls': photo.urls,
+                             'category': photo.category,
+                             'type': photo.type,
+                             'title': photo.title
+                         });
+                     });
+                 }
+             }
+             return dealerPhotos;
+         };
+ 
+         Vehicle._populateOdometerByEntries = function (odometer) {
+             return {
+                 'displayValue': odometer.displayValue ? (odometer.displayValue == "Contact Us" ? adapter.ALT_DISPLAY_VALUE : odometer.displayValue) : adapter.ALT_DISPLAY_VALUE,
+                 'value': odometer.value || adapter.ALT_DISPLAY_VALUE,
+                 'units': odometer.units || adapter.ALT_DISPLAY_VALUE
+             }
+-        }
++        };
++
++        Vehicle.getDorInformation = function(vehicle, dealerProperty){
++            //Currently don't know which property file we have to configure third party urls.
++            var dealerOnlineRetailingUrl = "https://dealeronlineretailing.com/GMOR/init.action?vin=";
++            //Adding <node> tag to dor_criteria xml to get all nodes of inventoryType.
++            var xmlNode = "<node>"+dealerProperty.dor_criteria+"</node>";
++            var dealerPropertyExistanceFlag = false;
++            parser.parseString(xmlNode, function(err, result){
++                result['node'].inventoryType.forEach(function (object) {
++                    if(object['$'].value === vehicle.category.toUpperCase() ){
++                        var makeList = object['make'][0]['$'].value.split(',');
++                        if(makeList.indexOf(vehicle.make.toUpperCase())){
++                            dealerPropertyExistanceFlag = true;
++                        }
++                    }
++                });
++            });
++            var url = new URL(vehicle.vehicleDetailWebUrl);
++            if(dealerPropertyExistanceFlag)
++                return dealerOnlineRetailingUrl+vehicle.vin+"&refer="+url.hostname+"&grti="+dealerProperty.dor_id;
++            else
++                return "";
++        };
++
+ 
+-    }).requires(Co.service.websiteproxy, Co.context.cache, base.domain.inventory.abstractVehicle, Co.context.urls, Co.util.cookie, Co.util.url, base.domain.inventory.pixelTagDataGenerator, base.domain.dealer.config, base.graph.nodeURI, base.domain.inventory.vehicleSpecification, Co.context.selections);
++    }).requires(Co.service.websiteproxy, Co.context.cache, base.domain.inventory.abstractVehicle, Co.context.urls, Co.util.cookie, Co.util.url, base.domain.inventory.pixelTagDataGenerator, base.domain.dealer.config, base.graph.nodeURI, base.domain.inventory.vehicleSpecification, Co.context.selections, Co.service.dealer);
+ }());
+
+... depotFile //Core/Websites/Hydra/trunk/products/hydra-base/base/domain/inventory/templates/vehicle/physicalVehicle/vehicleDetailHyperlinks.html
+... clientFile /Users/raov/raov_pun-raov-m_4885/raov_pun-raov-m_4885/Core/Websites/Hydra/trunk/products/hydra-base/base/domain/inventory/templates/vehicle/physicalVehicle/vehicleDetailHyperlinks.html
+... rev 10
+... type ktext
+
+@@ -1,15 +1,16 @@
+ <div class="tertiary future-features">
+     <a href="{{#content.vehicle.saveVehiclesLinkHref}}"
+        class="vehicle-save"
+        data-vehicleid="{{#content.vehicle.nodeUri.instanceID}}"
+        aria-saved="{{#content.vehicle.ariaSaved}}"
+        merchandising-savelink="currVehicleId: {{#content.vehicle.nodeUri.instanceID}}; isSaved: {{#content.vehicle.ariaSaved}};">{{"inventory.buttons.save"|i18n}}</a>
+     
+     <a class="vehicle-compare" href="{{#context.page}}#vehicle-compare">{{"inventory.compare.compare"|i18n}}</a>
+     <a href="{{#context.page}}?layer=ContentBlock-GetAQuote#vehicle-watch-{{#content.vehicle.nodeUri.instanceID}}"
+        class="vehicle-watch" base-modal="containerId:modal-container">{{"inventory.pricewatch.pricewatch"|i18n}}</a>
+ </div>
+ 
+ <a class="primary" href="{{#context.page}}?layer=ContentBlock-GetAQuote#vehicle-quote-{{content.vehicle.nodeUri.instanceID}}"
+    itemprop="url" base-modal="containerId:modal-container">{{"inventory.labels.getaquote"|i18n}}</a>
+-<a class="primary" if="0" data-if="#content.vehicle.vin" href="BOL?vin={{#content.vehicle.vin}}" itemprop="url">{{"inventory.labels.buyonline"|i18n}}</a>
+\ No newline at end of file
++<a class="primary" if="0" data-if="#content.vehicle.vin" href="BOL?vin={{#content.vehicle.vin}}" itemprop="url">{{"inventory.labels.buyonline"|i18n}}</a>
++<a class="primary" if="content.vehicle.vehicleScdUrl" href="{{content.vehicle.vehicleScdUrl}}" >Create Your Deal</a>
+\ No newline at end of file
+
+... depotFile //Core/Websites/Hydra/trunk/products/hydra-base/base/domain/inventory/templates/vehicle/physicalVehicle/vehicleListingHyperlink.html
+... clientFile /Users/raov/raov_pun-raov-m_4885/raov_pun-raov-m_4885/Core/Websites/Hydra/trunk/products/hydra-base/base/domain/inventory/templates/vehicle/physicalVehicle/vehicleListingHyperlink.html
+... rev 46
+... type ktext
+
+@@ -1,31 +1,32 @@
+ <div class="tertiary future-features">
+     
+     <a href="{{content.instance.saveVehiclesLinkHref}}"
+        class="vehicle-save"
+        data-vehicleid="{{content.instance.nodeUri.instanceID}}"
+        aria-saved="{{content.instance.ariaSaved}}"
+        merchandising-savelink="currVehicleId: {{content.instance.nodeUri.instanceID}}; isSaved: {{content.instance.ariaSaved}};">{{"inventory.buttons.save"|i18n}}</a>
+     
+     <a href="{{content.instance.compareData.href}}"
+        class="vehicle-compare"
+        data-vehicleId="{{content.instance.id}}"
+        merchandising-comparevehicle>{{"inventory.compare.compare"|i18n}}</a>
+ 
+     <a href="{{content.instance.vehicleDetailWebUrl}}?layer=ContentBlock-PriceWatch#vehicle-watch-{{content.instance.nodeUri.instanceID}}"
+        class="vehicle-watch"
+        data-vin="{{content.instance.vin}}"
+        base-modal="containerId:modal-container">{{"inventory.pricewatch.pricewatch"|i18n}}</a>
+    
+ </div>
+ 
+ <a class="primary" if="content.instance.vehicleDetailWebUrl"
+    href="{{content.instance.vehicleDetailWebUrl}}"
+    itemprop="url"
+    data-action="LearnMore">{{content.config.inventory.fieldLabels.showMoreLabel}}</a>
+ <a class="primary" if="0" data-if="content.instance.vin"
+    href="BOL?vin={{content.instance.vin}}"
+    itemprop="url">{{"inventory.labels.buyonline"|i18n}}</a>
+ <a class="primary" if="content.instance.vehicleDetailWebUrl"
+    href="{{content.instance.vehicleDetailWebUrl}}?layer=ContentBlock-GetAQuote#vehicle-quote-{{content.instance.nodeUri.instanceID}}"
+    itemprop="url"
+-   base-modal="containerId:modal-container">{{"inventory.labels.getaquote"|i18n}}</a>
+\ No newline at end of file
++   base-modal="containerId:modal-container">{{"inventory.labels.getaquote"|i18n}}</a>
++<a if="content.instance.vehicleScdUrl" href="{{content.instance.vehicleScdUrl}}" >Create Your Deal</a>
+\ No newline at end of file
+
+... depotFile //Core/Websites/Hydra/trunk/products/hydra-base/package.json
+... clientFile /Users/raov/raov_pun-raov-m_4885/raov_pun-raov-m_4885/Core/Websites/Hydra/trunk/products/hydra-base/package.json
+... rev 62
+... type text
+
+@@ -1,58 +1,60 @@
+ {
+   "name": "hydra-base",
+   "namespace": "base",
+   "version": "1.0.0",
+   "description": "Contains core products available to everyone without declaring a dependency.",
+   "author": "Cobalt/ADP Core UI Team <DSDMDevCoreUI@adp.com>",
+   "license": "Closed Source",
+   "scripts": {
+     "start": "HYDRA_BASE=$PWD node bin/start-server.js",
+     "stop": "HYDRA_BASE=$PWD npm run-script hydra-server stop",
+     "test": "sh test/runtests.sh"
+   },
+   "dependencies": {
+     "archiver": "^0.16.0",
+     "async": "^0.2.5",
+     "bluebird": "^3.0.6",
+     "gcms-cache": "^0.1.1",
+     "gcms-client": "0.3.60",
+     "hydra-core": "^1.0.0",
+     "json-mask": "^0.3.4",
+     "lodash": "^3.10.1",
+     "node-uuid": "^1.4.1",
+     "pkginfo": "^0.3.1",
+     "superagent": "^1.2.0",
+     "eyes.selenium": "0.0.48",
+-    "moment": "~2.2.1"
++    "moment": "~2.2.1",
++    "xml2js": "^0.4.4",
++    "url-parse": "1.1.1"
+   },
+   "devDependencies": {
+     "chai": "^3.4.1",
+     "chai-jasmine": "^1.0.7",
+     "extend": "1.3.0",
+     "grunt-bumpup": "0.6.1",
+     "grunt-cli": "0.1.7",
+     "grunt-continue": "0.1.0",
+     "grunt-contrib-clean": "0.6.0",
+     "grunt-contrib-concat": "~0.4.0",
+     "grunt-contrib-less": "1.0.0",
+     "grunt-digest": "^0.1.2",
+     "grunt-exec": "0.4.6",
+     "grunt-jasmine-node": "^0.3.1",
+     "grunt-mocha-cli": "2.1.0",
+     "grunt-publish": "0.0.5",
+     "hydra-grunt-tasks": "~1.0.0",
+     "hydra-server": "~1.0.0",
+     "hydra-test": "~1.0.0",
+     "jasmine-before-all": "^0.1.0",
+     "jasmine-node": "1.14.5",
+     "mocha-multi": "0.7.2",
+     "q": "1.1.2",
+     "request": "~2.27.0",
+     "yuicompressor": "2.4.8",
+     "pm2": "0.11.1",
+     "pkginfo": "0.3.0",
+     "moment": "~2.2.1",
+     "istanbul": "^0.3.2"
+   },
+   "publishConfig": {}
+ }
+
